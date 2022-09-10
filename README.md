@@ -1,29 +1,5 @@
-# PD_Micro
-ATMega32U4 Arduino board with USB-C PD Power Delivery and PPS
-
-<img src="images/pd-micro-render-front-small.png" alt="Front Render" width="300">
-
-<img src="images/pd-micro-render-back-small.png" alt="Back Render" width="300">
-
-## Specs:
-- ATmega32U4 running at 5 V and 16 MHz
-- FUSB302 USB-C PHY (USB PD communication on CC pins)
-- TPS62175 DC-DC for 5-20V input, 5V 500mA max output
-- On-board 30V 10.4A P-channel MOSFET load switch
-- 5 LEDs for power delivery voltage level
-- 3 LEDs for power delivery current level
-- 3.5 mm, 2 position terminal block for power output
-- 1.6 x 0.7 inches (0.3 inches longer than pro micro)
-
-<img src="images/pd-micro-pinout-small.png" alt="Pin out" width="600">
-
-
+# FUSB302 Arduino library
 # Basic Usage
-
-Open `PD_Micro.ino` with Arduino Sketch. Choose board `Arduino Leoardo`
-
-<img src="images/pd-micro-arduino-sketch.png" alt="arduino-sketch" width="500">
-
 
 ## Set power option
 Allocate a PD_UFP object
@@ -60,16 +36,14 @@ Before USB PD negotiation had completed, `PD_UFP.run()` must be called in a shor
 The negotiation process typically takes less than a second.
 
 ## Examine the negotiated power value
-Examine the negotiated power value. Turn on the load switch only when the power requirements are met. PD Micro itself does not have PD over current protection. Any excessive power usage may trigger USB PD host power protection, result in voltage dip and MCU reset. 
+Examine the negotiated power value. Turn on the load switch only when the power requirements are met. Any excessive power usage may trigger USB PD host power protection. 
 
 ```
 PD_UFP.run();
 if (PD_UFP.get_voltage() == PD_V(20.0) && PD_UFP.get_current() >= PD_A(1.5)) {
-  PD_UFP.set_output(1);   // Turn on load switch 
-  PD_UFP.set_led(1);      // Output reach 20V and 1.5A, set indicators on
+  // PPS trigger success
 } else {
-  PD_UFP.set_output(0);   // Turn off load switch
-  PD_UFP.blink_led(400);  // Output less than 20V or 1.5A, blink LED
+  // Fail to trigger PPS, fall back
 }
 ```
 For Fix power option, `PD_UFP.get_voltage()` in 50 mV units and `PD_UFP.get_current()` in 10mA units. Use marco `PD_V` and `PD_A` to simplify conversion.
@@ -88,8 +62,6 @@ USB PD3.0 introduces a new PPS (Programmable Power Supply) mode. If PD source su
 
 The library provides another set of procedures to request PPS. If source PPS is not available or not qualified, it will fall back to use the regular PD power option.
 
-<img src="images/pd-micro-arduino-sketch-pps.png" alt="arduino-sketch" width="500">
-
 ## Set voltage and current on startup
 Instead of using `PD_UFP.init()`, use `PD_UFP.init_PPS()` to setup PPS voltage in 20 mV units and PPS current in 50 mA units. Use marco `PPS_V()` and `PPS_A()` to simplify conversion.
 ```
@@ -100,12 +72,6 @@ The default fall-back PD power option is 5V. It can be changed by an extra param
 PD_UFP.init_PPS(PPS_V(4.2), PPS_A(2.0), PD_POWER_OPTION_MAX_9V);
 ```
 
-PD Micro use ATMega32U4 with safe operation 8MHz @ <4.5V. To request PPS below 4.5V, use `clock_prescale_set(clock_div_2)` to slow down the working frequency, and use `PD_UFP.clock_prescale_set(2)` to prescale the library internal clock.
-```
-PD_UFP.clock_prescale_set(2);
-clock_prescale_set(clock_div_2);
-```
-
 ## Wait for USB PD PPS trigger completed
 Once PD negotiation is completed,
 - If PPS is available and qualified, `PD_UFP.is_PPS_ready()` is set. 
@@ -114,12 +80,10 @@ Once PD negotiation is completed,
 If PPS is successfully triggered, the output voltage and current will be the exact value provided in the startup. It is not required to examine negotiated voltage and current.
 ```
 PD_UFP.run();
-if (PD_UFP.is_PPS_ready()) {          // PPS trigger success
-  PD_UFP.set_output(1);               // Turn on load switch 
-  PD_UFP.set_led(1);                  // PPS output 4.2V 2.0A ready
-} else if (PD_UFP.is_power_ready()) { // Fail to trigger PPS, fall back
-  PD_UFP.set_output(0);               // Turn off load switch
-  PD_UFP.blink_led(400);              // blink LED
+if (PD_UFP.is_PPS_ready()) {
+  // PPS trigger success
+} else if (PD_UFP.is_power_ready()) {
+  // Fail to trigger PPS, fall back
 }
 ```
 For PPS, `PD_UFP.get_voltage()` in 20 mV units and `PD_UFP.get_current()` in 50 mA units. Use marco `PPS_V()` and `PPS_A()` to simplify conversion.
@@ -137,19 +101,6 @@ By calling `PD_UFP.set_PPS()`, the library re-evaluates all PPS source capabilit
 
 To exit PPS mode, call `PD_UFP.set_power_option()` to clear PPS setting and fall back to regular power option mode.
 
-# LED Indicators
-There are 5 LEDs for voltage and 3 LEDs for current on PD_Micro, multiplexed by 6 internal IO pins. These are managed by the PD_UFP library. 
-
-The library turn on voltage LED according to the following table
-
-| Voltage Range | LED | 
-| --- | --- |
-| >= 3.3V && < 9V | 5V | 
-| >= 9V && < 12V | 9V | 
-| >= 12V && < 15V | 12V | 
-| >= 15V && < 20V | 15V | 
-| >= 20 | 20V | 
-
 # Debugging
 The library can log library status, source capabilities, protocol packets, with timestamps in the millisecond step to the serial port.
 
@@ -162,22 +113,16 @@ class PD_UFP_log_c PD_UFP;
 initialize hardware serial1 in setup.
 ```
 void setup() {
-  Serial1.begin(115200);
+  Serial.begin(115200);
   ...
 ```
 call `PD_UFP.print_status(Serial1)` inside `loop()`.
 ```
 void loop() {
   PD_UFP.run();
-  PD_UFP.print_status(Serial1);
+  PD_UFP.print_status(Serial);
   ...
 ```
-Connect Pin 1 (PD3 / UART TX) and GND to external USB to UART to read serial messages.
-
-<img src="images/pd-micro-pinout-serial.png" alt="serial" width="200">
-
-PD Micro can be converted to serial passthrough mode and use it as USB to UART. I included these Arduino sketch examples in <a href="/examples">examples</a> folder.
-
 ## Debug raw packets
 The library provides two log levels. Initialize PD_UFP with extra parameter `PD_LOG_LEVEL_VERBOSE` to output raw packets
 ```
@@ -190,9 +135,3 @@ enum pd_log_level_t {
 };
 ```
 <img src="images/pd-micro-pd-status-log-verbose.png" alt="serial" width="400">
-
-# Bootloader
-PD Micro uses `Caterina-promicro16.hex` bootloader provided by Sparkfun. Program it by `avrdude` and set the corresponding `efuse`.
-```
-avrdude -p m32u4 -P usb -c avrispmkii -U flash:w:Caterina-promicro16.hex -U efuse:w:0xcb:m -U hfuse:w:0xd8:m -U lfuse:w:0xff:m
-```

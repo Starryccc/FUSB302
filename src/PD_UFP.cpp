@@ -11,6 +11,7 @@
  *
  * Support PD3.0 PPS
  * 
+ * Modified 10 September 2022 by Starryccc (Remove hardware-related functions)
  */
  
 #include <stdint.h>
@@ -23,16 +24,6 @@
 #define t_RequestToPSReady      580     // combine t_SenderResponse and t_PSTransition
 #define t_PPSRequest            5000    // must less than 10000 (10s)
 
-#define PIN_OUTPUT_ENABLE       10
-#define PIN_FUSB302_INT         7
-
-#define PIN_LED_CURRENT_1       13
-#define PIN_LED_CURRENT_2       12
-#define PIN_LED_VOLTAGE_1       // PE2 not support by ardunio library, manipulate register directly
-#define PIN_LED_VOLTAGE_2       22
-#define PIN_LED_VOLTAGE_3       23
-#define PIN_LED_VOLTAGE_4       11
-
 enum {
     STATUS_LOG_MSG_TX,
     STATUS_LOG_MSG_RX,
@@ -42,10 +33,7 @@ enum {
     STATUS_LOG_POWER_READY,
     STATUS_LOG_POWER_PPS_STARTUP,
     STATUS_LOG_POWER_REJECT,
-    STATUS_LOG_LOAD_SW_ON,
-    STATUS_LOG_LOAD_SW_OFF,
 };
-
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // PD_UFP_core_c
@@ -71,6 +59,11 @@ PD_UFP_core_c::PD_UFP_core_c():
     memset(&protocol, 0, sizeof(PD_protocol_t));
 }
 
+void PD_UFP_core_c::set_fusb302_int_pin(uint8_t pin)
+{
+    fusb302_int_pin = pin;
+}
+
 void PD_UFP_core_c::init(enum PD_power_option_t power_option)
 {
     init_PPS(0, 0, power_option);
@@ -79,7 +72,7 @@ void PD_UFP_core_c::init(enum PD_power_option_t power_option)
 void PD_UFP_core_c::init_PPS(uint16_t PPS_voltage, uint8_t PPS_current, enum PD_power_option_t power_option)
 {
     // Initialize FUSB302
-    pinMode(PIN_FUSB302_INT, INPUT_PULLUP); // Set FUSB302 int pin input ant pull up
+    pinMode(fusb302_int_pin, INPUT_PULLUP); // Set FUSB302 int pin input ant pull up
     FUSB302.i2c_address = 0x22;
     FUSB302.i2c_read = FUSB302_i2c_read;
     FUSB302.i2c_write = FUSB302_i2c_write;
@@ -105,7 +98,7 @@ void PD_UFP_core_c::init_PPS(uint16_t PPS_voltage, uint8_t PPS_current, enum PD_
 
 void PD_UFP_core_c::run(void)
 {
-    if (timer() || digitalRead(PIN_FUSB302_INT) == 0) {
+    if (timer() || digitalRead(fusb302_int_pin) == 0) {
         FUSB302_event_t FUSB302_events = 0;
         for (uint8_t i = 0; i < 3 && FUSB302_alert(&FUSB302, &FUSB302_events) != FUSB302_SUCCESS; i++) {}
         if (FUSB302_events) {
@@ -127,13 +120,6 @@ void PD_UFP_core_c::set_power_option(enum PD_power_option_t power_option)
 {
     if (PD_protocol_set_power_option(&protocol, power_option)) {
         send_request = 1;
-    }
-}
-
-void PD_UFP_core_c::clock_prescale_set(uint8_t prescaler)
-{
-    if (prescaler) {
-        clock_prescaler = prescaler;
     }
 }
 
@@ -164,7 +150,7 @@ FUSB302_ret_t PD_UFP_core_c::FUSB302_i2c_write(uint8_t dev_addr, uint8_t reg_add
 
 FUSB302_ret_t PD_UFP_core_c::FUSB302_delay_ms(uint32_t t)
 {
-    delay(t / clock_prescaler);
+    delay(t);
     return FUSB302_SUCCESS;
 }
 
@@ -174,7 +160,7 @@ void PD_UFP_core_c::handle_protocol_event(PD_protocol_event_t events)
         wait_src_cap = 0;
         get_src_cap_retry_count = 0;
         wait_ps_rdy = 1;
-        time_wait_ps_rdy = clock_ms();
+        time_wait_ps_rdy = millis();
         status_log_event(STATUS_LOG_SRC_CAP);
     }
     if (events & PD_PROTOCOL_EVENT_REJECT) {
@@ -198,7 +184,7 @@ void PD_UFP_core_c::handle_protocol_event(PD_protocol_event_t events)
                 send_request = 1;
                 status_log_event(STATUS_LOG_POWER_PPS_STARTUP);
             } else {
-                time_PPS_request = clock_ms();
+                time_PPS_request = millis();
                 status_power_ready(STATUS_POWER_PPS, 
                     PD_protocol_get_PPS_voltage(&protocol), PD_protocol_get_PPS_current(&protocol));
                 status_log_event(STATUS_LOG_POWER_READY);
@@ -248,7 +234,7 @@ void PD_UFP_core_c::handle_FUSB302_event(FUSB302_event_t events)
     if (events & FUSB302_EVENT_GOOD_CRC_SENT) {
         uint16_t header;
         uint32_t obj[7];
-        delay_ms(2);  /* Delay respond in case there are retry messages */
+        delay(2);  /* Delay respond in case there are retry messages */
         if (PD_protocol_respond(&protocol, &header, obj)) {
             status_log_event(STATUS_LOG_MSG_TX, obj);
             FUSB302_tx_sop(&FUSB302, header, obj);
@@ -258,7 +244,7 @@ void PD_UFP_core_c::handle_FUSB302_event(FUSB302_event_t events)
 
 bool PD_UFP_core_c::timer(void)
 {
-    uint16_t t = clock_ms();
+    uint16_t t = millis();
     if (wait_src_cap && t - time_wait_src_cap > t_TypeCSinkWaitCap) {
         time_wait_src_cap = t;
         if (get_src_cap_retry_count < 3) {
@@ -289,7 +275,7 @@ bool PD_UFP_core_c::timer(void)
         /* Send request if option updated or regularly in PPS mode to keep power alive */
         PD_protocol_create_request(&protocol, &header, obj);
         status_log_event(STATUS_LOG_MSG_TX, obj);
-        time_wait_ps_rdy = clock_ms();
+        time_wait_ps_rdy = millis();
         FUSB302_tx_sop(&FUSB302, header, obj);
     }
     if (t - time_polling > t_PD_POLLING) {
@@ -312,181 +298,23 @@ void PD_UFP_core_c::status_power_ready(status_power_t status, uint16_t voltage, 
     status_power = status;
 }
 
-uint8_t PD_UFP_core_c::clock_prescaler = 1;
-
-void PD_UFP_core_c::delay_ms(uint16_t ms)
+// ///////////////////////////////////////////////////////////////////////////////////////////////////
+// // PD_UFP_c, extended from PD_UFP_core_c, Add LED and Load switch functions
+// ///////////////////////////////////////////////////////////////////////////////////////////////////
+PD_UFP_c::PD_UFP_c()
 {
-    delay(ms / clock_prescaler);
-}
-
-uint16_t PD_UFP_core_c::clock_ms(void)
-{
-    return (uint16_t)millis() * clock_prescaler;
-}
-
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// PD_UFP_c, extended from PD_UFP_core_c, Add LED and Load switch functions
-///////////////////////////////////////////////////////////////////////////////////////////////////
-PD_UFP_c::PD_UFP_c():
-    led_blink_enable(0),
-    led_blink_status(0),
-    time_led_blink(0),
-    period_led_blink(0),
-    led_voltage(PD_UFP_VOLTAGE_LED_OFF),
-    led_current(PD_UFP_CURRENT_LED_OFF),
-    status_load_sw(0)
-{
-    digitalWrite(PIN_OUTPUT_ENABLE, 0);
-    pinMode(PIN_OUTPUT_ENABLE, OUTPUT);
-        
-    update_voltage_led(PD_UFP_VOLTAGE_LED_OFF);
-    update_current_led(PD_UFP_CURRENT_LED_OFF);    
-}
-
-void PD_UFP_c::set_led(PD_UFP_VOLTAGE_LED_t index_v, PD_UFP_CURRENT_LED_t index_a)
-{
-    led_blink_enable = 0;
-    update_voltage_led(index_v);
-    update_current_led(index_a);
-}
-
-void PD_UFP_c::set_led(uint8_t enable)
-{
-    led_blink_enable = 0;
-    if (enable) {
-        update_voltage_led(PD_UFP_VOLTAGE_LED_AUTO);
-        update_current_led(PD_UFP_CURRENT_LED_AUTO);
-    } else {
-        update_voltage_led(PD_UFP_VOLTAGE_LED_OFF);
-        update_current_led(PD_UFP_CURRENT_LED_OFF);
-    }
-}
-
-void PD_UFP_c::blink_led(uint16_t period)
-{
-    led_blink_enable = 1;
-    period_led_blink = period >> 1;
-}
-
-void PD_UFP_c::set_output(uint8_t enable)
-{
-    digitalWrite(PIN_OUTPUT_ENABLE, enable);
-    if (status_load_sw != enable) {
-        status_load_sw = enable;
-        status_log_event(enable ? STATUS_LOG_LOAD_SW_ON : STATUS_LOG_LOAD_SW_OFF);
-    }
 }
 
 void PD_UFP_c::run(void)
 {
     PD_UFP_core_c::run();
-    handle_led();
+    // handle_led();
 }
 
 void PD_UFP_c::status_power_ready(status_power_t status, uint16_t voltage, uint16_t current)
 {
     PD_UFP_core_c::status_power_ready(status, voltage, current);
-    if (status == STATUS_POWER_PPS) {
-        calculate_led_pps(voltage, current);
-    } else {
-        calculate_led(voltage, current);
-    }
 }
-
-void PD_UFP_c::calculate_led(uint16_t voltage, uint16_t current)
-{
-    uint8_t i;
-    const uint16_t PD_V_level[4] = {PD_V(9.0), PD_V(12.0), PD_V(15.0), PD_V(20.0)};
-    const uint16_t PD_A_level[2] = {PD_A(1.5), PD_A(3.0)};
-    for (i = 0; i < 4 && voltage >= PD_V_level[i]; i++) {}
-    led_voltage = PD_UFP_VOLTAGE_LED_5V + i;
-    for (i = 0; i < 2 && current >= PD_A_level[i]; i++) {}
-    led_current = PD_UFP_CURRENT_LED_LE_1V + i;
-}
-
-void PD_UFP_c::calculate_led_pps(uint16_t PPS_voltage, uint8_t PPS_current)
-{
-    uint8_t i;
-    const uint16_t PPS_V_level[4] = {PPS_V(9.0), PPS_V(12.0), PPS_V(15.0), PPS_V(20.0)};
-    const uint8_t PPS_A_level[2] = {PPS_A(1.5), PPS_A(3.0)};
-    for (i = 0; i < 4 && PPS_voltage >= PPS_V_level[i]; i++) {}
-    led_voltage = PD_UFP_VOLTAGE_LED_5V + i;
-    for (i = 0; i < 2 && PPS_current >= PPS_A_level[i]; i++) {}
-    led_current = PD_UFP_CURRENT_LED_LE_1V + i;
-}
-
-void PD_UFP_c::update_voltage_led(PD_UFP_VOLTAGE_LED_t index)
-{
-    if (index >= PD_UFP_VOLTAGE_LED_AUTO) {
-        index = led_voltage;
-    }
-    if (index == PD_UFP_VOLTAGE_LED_OFF) {
-        DDRE &= 0xFB;  // pinMode PE2 INPUT
-        PORTE &= 0xFB;  // Clear PE2
-        pinMode(PIN_LED_VOLTAGE_2, INPUT);
-        pinMode(PIN_LED_VOLTAGE_3, INPUT);
-        pinMode(PIN_LED_VOLTAGE_4, INPUT);
-    } else {
-        const uint8_t led1[5] = {0, 0, 0, 0, 1};
-        const uint8_t led2[5] = {1, 0, 0, 0, 1};
-        const uint8_t led3[5] = {1, 1, 0, 0, 1};
-        const uint8_t led4[5] = {1, 1, 1, 0, 1};
-        index -= 1;
-        if (led1[index]) {
-            PORTE |= 0x04;  // Set PE2
-        } else {
-            PORTE &= 0xFB;  // Clear PE2
-        }
-        digitalWrite(PIN_LED_VOLTAGE_2, led2[index]);
-        digitalWrite(PIN_LED_VOLTAGE_3, led3[index]);
-        digitalWrite(PIN_LED_VOLTAGE_4, led4[index]);
-        DDRE |= 0x04;  // pinMode PE2 OUTPUT
-        pinMode(PIN_LED_VOLTAGE_2, OUTPUT);
-        pinMode(PIN_LED_VOLTAGE_3, OUTPUT);
-        pinMode(PIN_LED_VOLTAGE_4, OUTPUT);
-    }
-}
-
-void PD_UFP_c::update_current_led(PD_UFP_CURRENT_LED_t index)
-{
-    if (index >= PD_UFP_CURRENT_LED_AUTO) {
-        index = led_current;
-    }
-    if (index == PD_UFP_CURRENT_LED_OFF) {
-        pinMode(PIN_LED_CURRENT_1, INPUT);
-        pinMode(PIN_LED_CURRENT_2, INPUT);
-    } else {
-        const uint8_t led1[3] = {0, 1, 1};
-        const uint8_t led2[3] = {0, 0, 1};
-        index -= 1;
-        digitalWrite(PIN_LED_CURRENT_1, led1[index]);
-        digitalWrite(PIN_LED_CURRENT_2, led2[index]);
-        pinMode(PIN_LED_CURRENT_1, OUTPUT);
-        pinMode(PIN_LED_CURRENT_2, OUTPUT);
-    }
-}
-        
-void PD_UFP_c::handle_led(void)
-{
-    if (led_blink_enable) {
-        uint16_t t = clock_ms();
-        if (t - time_led_blink > period_led_blink) {
-            time_led_blink = t;
-            if (led_blink_status) {
-                update_voltage_led(PD_UFP_VOLTAGE_LED_OFF);
-                update_current_led(PD_UFP_CURRENT_LED_OFF);
-                led_blink_status = 0;
-            } else {
-                update_voltage_led(PD_UFP_VOLTAGE_LED_AUTO);
-                update_current_led(PD_UFP_CURRENT_LED_AUTO);
-                led_blink_status = 1;
-            }
-        }
-    }
-}
-
-
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 // Optional: PD_UFP_log_c, extended from PD_UFP_c to provide logging function.
@@ -540,7 +368,7 @@ void PD_UFP_log_c::status_log_event(uint8_t status, uint32_t * obj)
         break;
     }
     log->status = status;
-    log->time = clock_ms();
+    log->time = millis();
     status_log_write++;
 }
 
@@ -670,12 +498,6 @@ int PD_UFP_log_c::status_log_readline(char * buffer, int maxlen)
     case STATUS_LOG_POWER_REJECT:
         LOG("%sRequest Rejected\n", t);
         break;
-    case STATUS_LOG_LOAD_SW_ON:
-        LOG("%sLoad SW ON\n", t);
-        break;
-    case STATUS_LOG_LOAD_SW_OFF:
-        LOG("%sLoad SW OFF\n", t);
-        break;
     }
     if (status_log_counter == 0) {
         t[0] = 0;
@@ -683,17 +505,6 @@ int PD_UFP_log_c::status_log_readline(char * buffer, int maxlen)
         status_log_counter = 0;
     }
     return n;
-}
-
-void PD_UFP_log_c::print_status(Serial_ & serial)
-{
-    // Wait for enough tx buffer in serial port to avoid blocking
-    if (serial && serial.availableForWrite() >= SERIAL_BUFFER_SIZE - 1) {
-        char buf[SERIAL_BUFFER_SIZE];
-        if (status_log_readline(buf, sizeof(buf) - 1)) {
-            serial.print(buf);
-        }
-    }
 }
 
 void PD_UFP_log_c::print_status(HardwareSerial & serial)
@@ -706,4 +517,3 @@ void PD_UFP_log_c::print_status(HardwareSerial & serial)
         }
     }
 }
-

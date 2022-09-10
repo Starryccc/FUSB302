@@ -11,6 +11,8 @@
  *
  * Support PD3.0 PPS
  * 
+ * 
+ * Modified 10 September 2022 by Starryccc (Remove hardware-related functions)
  */
 
 #ifndef PD_UFP_H
@@ -27,25 +29,9 @@ extern "C" {
     #include "PD_UFP_Protocol.h"
 }
 
-enum {
-    PD_UFP_VOLTAGE_LED_OFF      = 0,
-    PD_UFP_VOLTAGE_LED_5V       = 1,
-    PD_UFP_VOLTAGE_LED_9V       = 2,
-    PD_UFP_VOLTAGE_LED_12V      = 3,
-    PD_UFP_VOLTAGE_LED_15V      = 4,
-    PD_UFP_VOLTAGE_LED_20V      = 5,
-    PD_UFP_VOLTAGE_LED_AUTO     = 6
-};
-typedef uint8_t PD_UFP_VOLTAGE_LED_t;
-
-enum {
-    PD_UFP_CURRENT_LED_OFF      = 0,
-    PD_UFP_CURRENT_LED_LE_1V    = 1,
-    PD_UFP_CURRENT_LED_LE_3V    = 2,
-    PD_UFP_CURRENT_LED_GT_3V    = 3,
-    PD_UFP_CURRENT_LED_AUTO     = 4    
-};
-typedef uint8_t PD_UFP_CURRENT_LED_t;
+#ifndef SERIAL_BUFFER_SIZE
+#define SERIAL_BUFFER_SIZE 64
+#endif
 
 enum {
     STATUS_POWER_NA = 0,
@@ -62,6 +48,7 @@ class PD_UFP_core_c
     public:
         PD_UFP_core_c();
         // Init
+        void set_fusb302_int_pin(uint8_t pin);
         void init(enum PD_power_option_t power_option = PD_POWER_OPTION_MAX_5V);
         void init_PPS(uint16_t PPS_voltage, uint8_t PPS_current, enum PD_power_option_t power_option = PD_POWER_OPTION_MAX_5V);
         // Task
@@ -77,7 +64,7 @@ class PD_UFP_core_c
         bool set_PPS(uint16_t PPS_voltage, uint8_t PPS_current);
         void set_power_option(enum PD_power_option_t power_option);
         // Clock
-        static void clock_prescale_set(uint8_t prescaler);
+        uint8_t fusb302_int_pin;
 
     protected:
         static FUSB302_ret_t FUSB302_i2c_read(uint8_t dev_addr, uint8_t reg_addr, uint8_t *data, uint8_t count);
@@ -110,11 +97,6 @@ class PD_UFP_core_c
         uint8_t wait_src_cap;
         uint8_t wait_ps_rdy;
         uint8_t send_request;
-        static uint8_t clock_prescaler;
-        // Time functions        
-        void delay_ms(uint16_t ms);
-        uint16_t clock_ms(void);
-        // Status logging
         virtual void status_log_event(uint8_t status, uint32_t * obj = 0) {}
 };
 
@@ -125,32 +107,12 @@ class PD_UFP_c : public PD_UFP_core_c
 {
     public:
         PD_UFP_c();
-        // Set LED
-        void set_led(uint8_t enable);
-        void set_led(PD_UFP_VOLTAGE_LED_t index_v, PD_UFP_CURRENT_LED_t index_a);
-        void blink_led(uint16_t period);
-        // Set Load Switch
-        void set_output(uint8_t enable);
         // Task
         void run(void);
 
     protected:
         // Status
         virtual void status_power_ready(status_power_t status, uint16_t voltage, uint16_t current);
-        // LED
-        uint8_t led_blink_enable;
-        uint8_t led_blink_status;
-        uint16_t time_led_blink;
-        uint16_t period_led_blink;
-        PD_UFP_VOLTAGE_LED_t led_voltage;
-        PD_UFP_CURRENT_LED_t led_current;
-        void calculate_led(uint16_t voltage, uint16_t current);
-        void calculate_led_pps(uint16_t PPS_voltage, uint8_t PPS_current);
-        void update_voltage_led(PD_UFP_VOLTAGE_LED_t index);
-        void update_current_led(PD_UFP_CURRENT_LED_t index);
-        void handle_led(void);
-        // Load Switch
-        uint8_t status_load_sw;
 };
 
 
@@ -176,7 +138,6 @@ class PD_UFP_log_c : public PD_UFP_c
     public:
         PD_UFP_log_c(pd_log_level_t log_level = PD_LOG_LEVEL_INFO);
         // Task
-        void print_status(Serial_ & serial);
         void print_status(HardwareSerial & serial);
         // Get
         int status_log_readline(char * buffer, int maxlen);
